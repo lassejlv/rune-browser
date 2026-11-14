@@ -237,10 +237,7 @@ wrap_task! {
             if let (Some(view), Some(content)) = (view_of(&browser), window.contentView()) {
                 view.setFrame(content.bounds());
                 let bounds = view.bounds();
-                eprintln!("POPUP fixed: view {:?} with {} inner", (bounds.size.width, bounds.size.height), view.subviews().len());
                 for inner in view.subviews().iter() {
-                    let frame = inner.frame();
-                    eprintln!("POPUP inner was {:?}", (frame.size.width, frame.size.height));
                     inner.setFrame(bounds);
                 }
             }
