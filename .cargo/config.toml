@@ -1,0 +1,3 @@
+# Chromium (CEF) is downloaded once into .cef/ and shared by debug and release builds.
+[env]
+CEF_PATH = { value = ".cef", relative = true }
