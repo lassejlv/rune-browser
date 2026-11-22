@@ -8,17 +8,13 @@
 use std::sync::atomic::Ordering;
 
 use cef::*;
-use objc2_app_kit::NSView;
 
-use super::{Command, Event, LIVE_BROWSERS, emit};
+use super::{Command, Event, LIVE_BROWSERS, emit, native};
 
-/// The window `browser`'s page is in.
+/// Sets the opacity of the window `browser`'s page is in.
 fn set_alpha(browser: &Browser, alpha: f64) {
-    let Some(view) = browser.host().map(|host| host.window_handle().cast::<NSView>()).filter(|view| !view.is_null()) else { return };
-    // SAFETY: Chromium's handle for a windowed browser is its live NSView, used here on the
-    // main thread, where every browser callback runs.
-    if let Some(window) = unsafe { (*view).window() } {
-        window.setAlphaValue(alpha);
+    if let Some(view) = native::view_of(browser) {
+        native::set_window_alpha(&view, alpha);
     }
 }
 

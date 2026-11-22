@@ -42,7 +42,7 @@ fn sidebar(s: &State, p: &Palette) -> El {
     bar.child(tabs(s, p)).child(bottom(s, p))
 }
 
-/// The row the macOS window buttons sit in, with the sidebar toggle and navigation at its end.
+/// The row the window buttons sit in, with the sidebar toggle and navigation at its end.
 fn controls(s: &State, p: &Palette) -> El {
     let [back, forward, reload] = parts::navigation(s, 28.0, p);
     let buttons = row()
@@ -53,7 +53,11 @@ fn controls(s: &State, p: &Palette) -> El {
         .child(back)
         .child(forward)
         .child(reload);
-    row().key("controls").h(28.0).center_y().justify_end().child(buttons)
+    let controls = row().key("controls").h(28.0).center_y();
+    match parts::window_buttons() {
+        Some(window) => controls.pl(4.0).child(window).child(el().grow(1.0)).child(buttons),
+        None => controls.justify_end().child(buttons),
+    }
 }
 
 /// Pinned tabs, as a row of tiles showing only their icons.

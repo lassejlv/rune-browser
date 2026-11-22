@@ -3,11 +3,11 @@
 use rune::Color;
 
 /// `0xRRGGBB` in sRGB.
-fn rgb(hex: u32) -> Color {
+pub(super) fn rgb(hex: u32) -> Color {
     rgba(hex, 1.0)
 }
 
-fn rgba(hex: u32, alpha: f32) -> Color {
+pub(super) fn rgba(hex: u32, alpha: f32) -> Color {
     // Rune's colours are linear-light.
     let channel = |shift: u32| {
         let encoded = ((hex >> shift) & 0xff) as f32 / 255.0;

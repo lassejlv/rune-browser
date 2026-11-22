@@ -11,7 +11,17 @@ if [ "${1:-}" = "--release" ]; then profile=release; flags=(--release); shift; f
 
 ./scripts/fetch-cef.sh
 cargo build ${flags[@]+"${flags[@]}"} --bin rune-browser --bin rune-browser-helper
-app=$(./scripts/bundle.sh "$profile")
-# Through LaunchServices, as Finder would: macOS only lets an app use Bluetooth (a passkey on
-# a phone) when the app itself, not the terminal, is what launched it.
-exec open -W "$app" --stdout /dev/stdout --stderr /dev/stderr --args "$@"
+
+if [ "$(uname -s)" = Darwin ]; then
+  app=$(./scripts/bundle.sh "$profile")
+  # Through LaunchServices, as Finder would: macOS only lets an app use Bluetooth (a passkey on
+  # a phone) when the app itself, not the terminal, is what launched it.
+  exec open -W "$app" --stdout /dev/stdout --stderr /dev/stderr --args "$@"
+fi
+
+# On Linux Chromium (libcef and its data files) sits beside the binaries, where they look for it.
+shopt -s nullglob
+for part in .cef/*/cef_linux_*/{*.so*,*.pak,*.dat,*.bin,*.json,locales}; do
+  cp -Ru "$part" "target/$profile/"
+done
+exec "target/$profile/rune-browser" "$@"

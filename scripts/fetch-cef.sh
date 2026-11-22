@@ -10,7 +10,9 @@ cd "$(dirname "$0")/.."
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) platform=macosarm64; dir=cef_macos_aarch64 ;;
   Darwin-x86_64) platform=macosx64; dir=cef_macos_x86_64 ;;
-  *) echo "fetch-cef: only macOS is set up so far" >&2; exit 1 ;;
+  Linux-x86_64) platform=linux64; dir=cef_linux_x86_64 ;;
+  Linux-aarch64) platform=linuxarm64; dir=cef_linux_aarch64 ;;
+  *) echo "fetch-cef: no CEF build for $(uname -s) on $(uname -m)" >&2; exit 1 ;;
 esac
 
 # cef = "156.4.0+156.0.26": the part after the plus is the CEF release.
@@ -42,13 +44,16 @@ PY
 
 echo "fetch-cef: downloading $name"
 curl -fL --retry 3 -C - "$cdn/$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$name")" -o "$work/$name"
-echo "$sha1  $work/$name" | shasum -a 1 -c - >/dev/null || { echo "fetch-cef: checksum mismatch" >&2; exit 1; }
+if command -v shasum >/dev/null; then check="shasum -a 1"; else check=sha1sum; fi
+echo "$sha1  $work/$name" | $check -c - >/dev/null || { echo "fetch-cef: checksum mismatch" >&2; exit 1; }
 
 echo "fetch-cef: extracting"
 tar -xjf "$work/$name" -C "$work"
 src="$work/${name%.tar.bz2}"
 rm -rf "$dest"
 mv "$src/Release" "$dest"
+# Outside macOS the framework's resources (paks, locales, ICU data) sit beside the library.
+if [ -d "$src/Resources" ]; then mv "$src/Resources"/* "$dest/"; fi
 for part in CMakeLists.txt cmake include libcef_dll CREDITS.html; do mv "$src/$part" "$dest/$part"; done
 printf '{\n  "type": "minimal",\n  "name": "%s",\n  "sha1": "%s"\n}' "$name" "$sha1" > "$dest/archive.json"
 rm -rf "$work"

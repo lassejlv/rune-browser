@@ -46,8 +46,9 @@ fn suggestions(s: &State, p: &Palette) -> Option<El> {
 
 fn strip(s: &State, p: &Palette) -> El {
     let active = s.active_id();
-    // The macOS window buttons take the strip's first 52 points, and 14 of air after them.
-    let mut strip = row().key("strip").h(STRIP_HEIGHT).pl(10.0).gap(6.0).center_y().window_drag().child(el().w(66.0));
+    // The window buttons take the strip's first 52 points after 8 of air, and 14 after them.
+    let lights = parts::window_buttons().map_or_else(el, |window| row().pl(8.0).center_y().child(window));
+    let mut strip = row().key("strip").h(STRIP_HEIGHT).pl(10.0).gap(6.0).center_y().window_drag().child(lights.w(66.0));
     if s.pinned().next().is_some() {
         let mut pinned = row().key("pinned").gap(4.0).center_y();
         for tab in s.pinned() {

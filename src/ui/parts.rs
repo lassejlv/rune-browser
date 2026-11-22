@@ -3,7 +3,7 @@
 use rune::tok::TextStyle;
 use rune::{Cursor, El, Icon, Key, PointerPress, PopupItem, PopupMenu, ScrollSpec, Span, Tx, col, el, icon, rich, row, text, text_input};
 
-use super::theme::Palette;
+use super::theme::{Palette, rgb, rgba};
 use super::icons;
 use crate::address;
 use crate::chromium::{self, Command, Frame};
@@ -40,6 +40,38 @@ fn turned_icon_button(key: &'static str, label: &'static str, glyph: &'static Ic
         .child(icon(glyph, glyph_size).color(p.icon).icon_rotation(turn))
         .opacity(if enabled { 1.0 } else { 0.4 });
     if enabled { button.hover(p.hover).on_press_tx(move |s: &mut State, tx| s.run(command, tx)) } else { button }
+}
+
+/// The window's close, minimize and maximize buttons where the app draws its own titlebar:
+/// on Linux, whose window has no frame. They sit and look where macOS puts its traffic
+/// lights, so both layouts read the same on every system. None on macOS, which draws its own.
+pub fn window_buttons() -> Option<El> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let light = |key: &'static str, label: &'static str, fill: u32, glyph: &'static Icon, act: fn(&mut Tx)| {
+        el()
+            .key(key)
+            .role("button")
+            .label(label)
+            .size(12.0, 12.0)
+            .radius(6.0)
+            .fill(rgb(fill))
+            .border(0.5, rgba(0x000000, 0.12))
+            .center()
+            .child(icon(glyph, 8.0).color(rgba(0x000000, 0.55)).group_opacity(0.0, 1.0))
+            .on_press_tx(move |_: &mut State, tx| act(tx))
+    };
+    Some(
+        row()
+            .key("window-buttons")
+            .gap(8.0)
+            .center_y()
+            .hover_group()
+            .child(light("window-close", "Close", 0xFF5F57, &icons::CLOSE, Tx::close_window))
+            .child(light("window-minimize", "Minimize", 0xFEBC2E, &icons::MINIMIZE, Tx::minimize))
+            .child(light("window-maximize", "Maximize", 0x28C840, &icons::MAXIMIZE, Tx::toggle_maximized)),
+    )
 }
 
 /// A tab's icon: its favicon, or a globe until it has one. Dimmed while the page loads.

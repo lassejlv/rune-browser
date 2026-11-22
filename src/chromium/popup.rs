@@ -5,17 +5,12 @@
 //! takes the size the page asks for and closes when it loses the keyboard, as Chrome's does.
 
 use std::cell::RefCell;
-use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 
 use cef::*;
-use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, msg_send};
-use objc2_app_kit::{NSAutoresizingMaskOptions, NSWindow};
-use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-use super::{BACKGROUND, Event, FRAME, LIVE_BROWSERS, emit, host, view_of};
+use super::native::{self, PopupWindow};
+use super::{BACKGROUND, Event, FRAME, LIVE_BROWSERS, emit, host};
 
 /// The gap between the popup and the edges of the page area it hangs in.
 const MARGIN: f64 = 8.0;
@@ -28,11 +23,12 @@ const NARROWEST: i32 = 120;
 const STANDARD: (f64, f64) = (380.0, 600.0);
 
 struct Popup {
-    window: Retained<NSWindow>,
+    window: PopupWindow,
     browser: Option<Browser>,
     url: String,
-    /// The screen point its top corner is held to, and whether that is its right corner.
-    corner: NSPoint,
+    /// The point its top corner is held to (window points from the top-left), and whether
+    /// that is its right corner.
+    corner: (f64, f64),
     right: bool,
     /// It has had the keyboard: losing it from then on closes it.
     was_key: bool,
@@ -48,12 +44,13 @@ struct Popup {
 thread_local! {
     static POPUP: RefCell<Option<Popup>> = const { RefCell::new(None) };
     /// Windows of popups that are closing, kept until their browsers are gone.
-    static CLOSING: RefCell<Vec<Retained<NSWindow>>> = const { RefCell::new(Vec::new()) };
+    static CLOSING: RefCell<Vec<PopupWindow>> = const { RefCell::new(Vec::new()) };
 }
 
-fn frame_for(corner: NSPoint, right: bool, (width, height): (f64, f64)) -> NSRect {
-    let x = if right { corner.x - width } else { corner.x };
-    NSRect::new(NSPoint::new(x, corner.y - height), NSSize::new(width, height))
+/// Where a popup of `width` and `height` hangs from `corner`, in window points from the
+/// top-left: x, y, width, height.
+fn frame_for((x, y): (f64, f64), right: bool, (width, height): (f64, f64)) -> [f64; 4] {
+    [if right { x - width } else { x }, y, width, height]
 }
 
 /// The tab a popup is opened over, which it is told about (see `popup_shim.js`).
@@ -95,32 +92,12 @@ pub fn open(url: &str, right: bool, over: Option<Over>) {
     if same {
         return;
     }
-    let Some(mtm) = MainThreadMarker::new() else { return };
-    let Some(parent) = host(|host| host.parent.window()).flatten() else { return };
+    let Some(parent) = host(|host| host.parent.clone()) else { return };
     let [x, y, w, h] = FRAME.get().rect;
-    let home = parent.frame();
-    let corner = NSPoint::new(home.origin.x + f64::from(x) + if right { f64::from(w) - MARGIN } else { MARGIN }, home.origin.y + home.size.height - f64::from(y) - MARGIN);
-    let frame = frame_for(corner, right, FIRST);
-    // Titled, so it may take the keyboard and has rounded corners, with the title bar clear
-    // and the page drawn under it.
-    const TITLED_FULL_SIZE: usize = 1 | 1 << 15;
-    const BUFFERED: usize = 2;
-    // SAFETY: plain AppKit calls on the main thread; the window is released by `Retained`,
-    // not by closing.
-    let window: Retained<NSWindow> = unsafe {
-        let window: Retained<NSWindow> = msg_send![mtm.alloc::<NSWindow>(), initWithContentRect: frame, styleMask: TITLED_FULL_SIZE, backing: BUFFERED, defer: false];
-        let _: () = msg_send![&*window, setReleasedWhenClosed: false];
-        let _: () = msg_send![&*window, setTitlebarAppearsTransparent: true];
-        let _: () = msg_send![&*window, setTitleVisibility: 1isize];
-        let _: () = msg_send![&*window, setMovable: false];
-        let _: () = msg_send![&*window, setExcludedFromWindowsMenu: true];
-        let _: () = msg_send![&*window, setAnimationBehavior: 2isize];
-        let _: () = msg_send![&*window, setAlphaValue: 0.0f64];
-        window
-    };
-    let Some(content) = window.contentView() else { return };
+    let corner = (f64::from(x) + if right { f64::from(w) - MARGIN } else { MARGIN }, f64::from(y) + MARGIN);
+    let Some((window, content)) = native::popup_open(&parent, frame_for(corner, right, FIRST)) else { return };
     let bounds = Rect { x: 0, y: 0, width: FIRST.0 as i32, height: FIRST.1 as i32 };
-    let info = WindowInfo { runtime_style: RuntimeStyle::ALLOY, ..Default::default() }.set_as_child(Retained::as_ptr(&content).cast_mut().cast::<c_void>(), &bounds);
+    let info = WindowInfo { runtime_style: RuntimeStyle::ALLOY, ..Default::default() }.set_as_child(native::handle(&content), &bounds);
     let mut client = PopupClient::new();
     // Blank first: the script that tells the popup its tab must be in place before the
     // popup's page starts to load.
@@ -136,27 +113,16 @@ pub fn open(url: &str, right: bool, over: Option<Over>) {
             frame.load_url(Some(&CefString::from(url)));
         }
     }
-    if let Some(browser) = &browser {
-        if let Some(view) = view_of(browser) {
-            view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
-            view.setFrame(content.bounds());
-        }
-        if let Some(browser_host) = browser.host() {
-            browser_host.set_auto_resize_enabled(1, Some(&Size { width: 25, height: 25 }), Some(&LARGEST));
-        }
+    let view = browser.as_ref().and_then(native::view_of);
+    if let Some(view) = &view {
+        native::popup_fill(&window, view);
     }
-    // SAFETY: as above.
-    unsafe {
-        let _: () = msg_send![&*parent, addChildWindow: &*window, ordered: 1isize];
-        let _: () = msg_send![&*window, makeKeyAndOrderFront: std::ptr::null::<AnyObject>()];
+    if let Some(browser_host) = browser.as_ref().and_then(|browser| browser.host()) {
+        browser_host.set_auto_resize_enabled(1, Some(&Size { width: 25, height: 25 }), Some(&LARGEST));
     }
-    if let Some(browser) = &browser {
-        if let Some(view) = view_of(browser) {
-            window.makeFirstResponder(Some(&view));
-        }
-        if let Some(browser_host) = browser.host() {
-            browser_host.set_focus(1);
-        }
+    native::popup_present(&parent, &window, view.as_ref());
+    if let Some(browser_host) = browser.as_ref().and_then(|browser| browser.host()) {
+        browser_host.set_focus(1);
     }
     POPUP.set(Some(Popup { window, browser, url: url.to_owned(), corner, right, was_key: false, fixed: false, loaded: false, shown: false, opened: std::time::Instant::now() }));
 }
@@ -164,21 +130,14 @@ pub fn open(url: &str, right: bool, over: Option<Over>) {
 /// Closes the popup, if one is open.
 pub fn close() {
     let Some(popup) = POPUP.take() else { return };
-    // SAFETY: plain AppKit calls on the main thread.
-    unsafe {
-        let parent: *mut AnyObject = msg_send![&*popup.window, parentWindow];
-        if !parent.is_null() {
-            let _: () = msg_send![parent, removeChildWindow: &*popup.window];
-        }
-        let _: () = msg_send![&*popup.window, orderOut: std::ptr::null::<AnyObject>()];
-    }
+    native::popup_hide(&popup.window);
     match popup.browser.as_ref().and_then(|browser| browser.host()) {
         // The window outlives this call: the browser's view is in it until Chromium is done.
         Some(browser_host) => {
             CLOSING.with_borrow_mut(|closing| closing.push(popup.window));
             browser_host.close_browser(1);
         }
-        None => popup.window.close(),
+        None => native::popup_close(popup.window),
     }
 }
 
@@ -187,7 +146,7 @@ pub fn close() {
 pub(super) fn tend() {
     let (lost, overdue) = POPUP.with_borrow_mut(|popup| {
         let Some(popup) = popup else { return (false, false) };
-        let key = popup.window.isKeyWindow();
+        let key = native::popup_is_key(&popup.window);
         popup.was_key |= key;
         let overdue = !popup.shown && popup.opened.elapsed().as_millis() > 1500;
         popup.loaded |= overdue;
@@ -217,8 +176,9 @@ fn resize(size: &Size) {
         } else {
             (f64::from(size.width.min(LARGEST.width)), f64::from(size.height.clamp(25, LARGEST.height)))
         };
-        popup.window.setFrame_display(frame_for(popup.corner, popup.right, size), true);
-        popup.window.setAlphaValue(1.0);
+        if let Some(parent) = host(|host| host.parent.clone()) {
+            native::popup_resize(&parent, &popup.window, frame_for(popup.corner, popup.right, size));
+        }
         popup.shown = true;
     });
 }
@@ -232,14 +192,10 @@ wrap_task! {
             let Some(browser_host) = browser.host() else { return };
             // The sizes are required even to turn it off: without them the call is dropped.
             browser_host.set_auto_resize_enabled(0, Some(&Size { width: 0, height: 0 }), Some(&Size { width: 0, height: 0 }));
-            // While it fitted itself, the page's own view (inside the browser's) took the
-            // page's size, and it is still that narrow. Give it the browser view's size.
-            if let (Some(view), Some(content)) = (view_of(&browser), window.contentView()) {
-                view.setFrame(content.bounds());
-                let bounds = view.bounds();
-                for inner in view.subviews().iter() {
-                    inner.setFrame(bounds);
-                }
+            // While it fitted itself, the page took the page's size, and it is still that
+            // narrow. Give it the popup's.
+            if let Some(view) = native::view_of(&browser) {
+                native::popup_fill(&window, &view);
             }
             browser_host.was_resized();
         }
@@ -354,7 +310,7 @@ wrap_life_span_handler! {
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             LIVE_BROWSERS.fetch_sub(1, Ordering::SeqCst);
             for window in CLOSING.take() {
-                window.close();
+                native::popup_close(window);
             }
         }
     }
@@ -400,11 +356,10 @@ wrap_keyboard_handler! {
     struct PopupKeys;
 
     impl KeyboardHandler {
-        fn on_pre_key_event(&self, _browser: Option<&mut Browser>, event: Option<&KeyEvent>, _os_event: *mut u8, _is_keyboard_shortcut: Option<&mut ::std::os::raw::c_int>) -> ::std::os::raw::c_int {
-            const COMMAND: u32 = 1 << 7;
+        fn on_pre_key_event(&self, _browser: Option<&mut Browser>, event: Option<&KeyEvent>, _os_event: native::OsEvent<'_>, _is_keyboard_shortcut: Option<&mut ::std::os::raw::c_int>) -> ::std::os::raw::c_int {
             let Some(event) = event else { return 0 };
-            // Escape and ⌘W close it.
-            let closes = event.windows_key_code == 0x1B || (event.modifiers & COMMAND != 0 && event.windows_key_code == i32::from(b'W'));
+            // Escape and ⌘W (Ctrl+W off macOS) close it.
+            let closes = event.windows_key_code == 0x1B || (event.modifiers & super::client::PRIMARY != 0 && event.windows_key_code == i32::from(b'W'));
             if event.type_ != KeyEventType::RAWKEYDOWN || !closes {
                 return 0;
             }
