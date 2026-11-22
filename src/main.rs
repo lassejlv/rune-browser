@@ -3,6 +3,8 @@
 
 mod address;
 mod chromium;
+#[cfg(target_os = "linux")]
+mod frame;
 mod extensions;
 mod history;
 mod session;
@@ -135,6 +137,13 @@ fn extensions_top(s: &mut State) {
 }
 
 fn main() {
+    // Chromium draws pages only into X11 windows on Linux, so a Wayland session runs the app
+    // through XWayland.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        // SAFETY: first thing in main, before any other thread exists.
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
     let spec = AppSpec::<State> {
         min_size: Some((640.0, 420.0)),
         scenes: &[("demo", demo), ("demo-top", demo_top), ("typing", typing), ("typing-top", typing_top), ("bars", bars), ("bars-top", bars_top), ("history", history_tab), ("settings", settings_tab), ("extensions", extensions_tab), ("extensions-top", extensions_top)],
@@ -144,6 +153,9 @@ fn main() {
     };
     let app = rune::App::new(spec)
         .titlebar(ui::SIDEBAR_TITLEBAR)
+        // Linux keeps a window manager's frame around a titlebar the app draws, so the window
+        // has none there and the view draws the window buttons (`ui::parts::window_buttons`).
+        .window_options(rune::WindowOptions { borderless: cfg!(target_os = "linux"), ..Default::default() })
         .standard_menus()
         .on_open_url(|s: &mut State, url, tx| s.open(url, false, None, tx))
         .on_close(|s: &mut State, _| s.save_now())
@@ -153,9 +165,21 @@ fn main() {
         });
     let handle = app.handle();
     app.on_ready(move |window| {
+        #[cfg(target_os = "linux")]
+        frame::start(window);
         // The first frame is on screen: only now load Chromium, which takes about a second.
         let events = handle.clone();
-        let started = chromium::start(window, move |event| events.update(move |s: &mut State, tx| s.on_event(event, tx)));
+        let main = handle.clone();
+        let started = chromium::start(
+            window,
+            move |event| events.update(move |s: &mut State, tx| s.on_event(event, tx)),
+            Box::new(move |work| {
+                main.update_if(move |_, _| {
+                    work();
+                    false
+                })
+            }),
+        );
         let saved = started.is_ok().then(session::load).flatten();
         let visited = started.is_ok().then(history::History::load);
         let window = window.clone();

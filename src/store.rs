@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Mutex, OnceLock};
 
-/// The folder everything the app keeps is in: `~/Library/Application Support/<app name>`.
-/// The name is the bundle executable's, so a copy of the app under another name (a build to
-/// test with) keeps a profile of its own.
+/// The folder everything the app keeps is in: `~/Library/Application Support/<app name>` on
+/// macOS, `$XDG_DATA_HOME/<app name>` (`~/.local/share/<app name>`) on Linux. The name is the
+/// bundle executable's, so a copy of the app under another name (a build to test with) keeps
+/// a profile of its own.
 pub fn folder() -> PathBuf {
     // RUNE_BROWSER_PROFILE puts everything somewhere else: a throwaway profile, or a test's.
     if let Some(folder) = std::env::var_os("RUNE_BROWSER_PROFILE").filter(|folder| !folder.is_empty()) {
@@ -15,7 +16,11 @@ pub fn folder() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let name = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned()));
     let name = name.filter(|name| name.starts_with("Rune Browser")).unwrap_or_else(|| "Rune Browser".into());
-    home.join("Library/Application Support").join(name)
+    if cfg!(target_os = "macos") {
+        return home.join("Library/Application Support").join(name);
+    }
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|data| data.is_absolute()).unwrap_or_else(|| home.join(".local/share"));
+    data.join(name)
 }
 
 /// A file in [`folder`].

@@ -400,15 +400,22 @@ const SHIFT: u32 = 1 << 1;
 const CONTROL: u32 = 1 << 2;
 const ALT: u32 = 1 << 3;
 const COMMAND: u32 = 1 << 7;
+/// The modifier the app's shortcuts are held with: ⌘ on macOS, Ctrl elsewhere.
+pub const PRIMARY: u32 = if cfg!(target_os = "macos") { COMMAND } else { CONTROL };
 
 /// The app's shortcut for a key pressed while the page has the keyboard.
 fn shortcut(modifiers: u32, key: i32) -> Option<Command> {
-    let (cmd, shift, ctrl, alt) = (modifiers & COMMAND != 0, modifiers & SHIFT != 0, modifiers & CONTROL != 0, modifiers & ALT != 0);
+    let (shift, ctrl, alt) = (modifiers & SHIFT != 0, modifiers & CONTROL != 0, modifiers & ALT != 0);
     let key = u8::try_from(key).ok()?;
-    if ctrl && !cmd && !alt && key == 0x09 {
+    if ctrl && modifiers & COMMAND == 0 && !alt && key == 0x09 {
         return Some(if shift { Command::PreviousTab } else { Command::NextTab });
     }
-    if !cmd || ctrl {
+    // Back and forward: ⌘← and ⌘→ on macOS, Alt+← and Alt+→ elsewhere (Ctrl+← moves by word).
+    let mac = cfg!(target_os = "macos");
+    if !mac && alt && !ctrl && !shift && (key == 0x25 || key == 0x27) {
+        return Some(if key == 0x25 { Command::Back } else { Command::Forward });
+    }
+    if modifiers & PRIMARY == 0 || (mac && ctrl) {
         return None;
     }
     match (key, shift, alt) {
@@ -418,10 +425,14 @@ fn shortcut(modifiers: u32, key: i32) -> Option<Command> {
         (b'R', false, false) => Some(Command::Reload),
         (b'R', true, false) => Some(Command::HardReload),
         (b'S', false, false) => Some(Command::ToggleSidebar),
-        (0xDB, false, false) | (0x25, false, false) => Some(Command::Back),
-        (0xDD, false, false) | (0x27, false, false) => Some(Command::Forward),
-        (0xDB, true, false) | (0x25, false, true) => Some(Command::PreviousTab),
-        (0xDD, true, false) | (0x27, false, true) => Some(Command::NextTab),
+        (0xDB, false, false) => Some(Command::Back),
+        (0xDD, false, false) => Some(Command::Forward),
+        (0xDB, true, false) => Some(Command::PreviousTab),
+        (0xDD, true, false) => Some(Command::NextTab),
+        (0x25, false, false) if mac => Some(Command::Back),
+        (0x27, false, false) if mac => Some(Command::Forward),
+        (0x25, false, true) if mac => Some(Command::PreviousTab),
+        (0x27, false, true) if mac => Some(Command::NextTab),
         (b'1'..=b'8', false, false) => Some(Command::SelectTab(usize::from(key - b'1'))),
         (b'9', false, false) => Some(Command::LastTab),
         (b'I', false, true) => Some(Command::DevTools),
@@ -450,7 +461,7 @@ wrap_keyboard_handler! {
             &self,
             _browser: Option<&mut Browser>,
             event: Option<&KeyEvent>,
-            _os_event: *mut u8,
+            _os_event: super::native::OsEvent<'_>,
             _is_keyboard_shortcut: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
             let Some(event) = event else { return 0 };

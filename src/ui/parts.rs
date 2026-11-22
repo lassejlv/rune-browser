@@ -42,6 +42,41 @@ fn turned_icon_button(key: &'static str, label: &'static str, glyph: &'static Ic
     if enabled { button.hover(p.hover).on_press_tx(move |s: &mut State, tx| s.run(command, tx)) } else { button }
 }
 
+/// None on macOS, which draws its own traffic lights.
+#[cfg(not(target_os = "linux"))]
+pub fn window_buttons(_side: f32, _p: &Palette) -> Option<El> {
+    None
+}
+
+/// The window's minimize, maximize and close buttons where the app draws its own titlebar:
+/// on Linux, whose window has no frame. They look and sit as a GNOME header bar's do: round,
+/// `side` points across, a faint fill behind a symbolic glyph, at the titlebar's trailing end.
+#[cfg(target_os = "linux")]
+pub fn window_buttons(side: f32, p: &Palette) -> Option<El> {
+    let button = |key: &'static str, label: &'static str, glyph: &'static Icon, act: fn(&mut Tx)| {
+        el()
+            .key(key)
+            .role("button")
+            .label(label)
+            .size(side, side)
+            .radius(side / 2.0)
+            .fill(p.text.alpha(if p.dark { 0.10 } else { 0.08 }))
+            .hover(p.hover)
+            .center()
+            .child(icon(glyph, 10.0).color(p.text))
+            .on_press_tx(move |_: &mut State, tx| act(tx))
+    };
+    Some(
+        row()
+            .key("window-buttons")
+            .gap(6.0)
+            .center_y()
+            .child(button("window-minimize", "Minimize", &icons::MINIMIZE, |_| crate::frame::minimize()))
+            .child(button("window-maximize", "Maximize", &icons::MAXIMIZE, Tx::toggle_maximized))
+            .child(button("window-close", "Close", &icons::CLOSE, Tx::close_window)),
+    )
+}
+
 /// A tab's icon: its favicon, or a globe until it has one. Dimmed while the page loads.
 pub fn favicon(tab: &Tab, size: f32, p: &Palette) -> El {
     let picture = match &tab.favicon {

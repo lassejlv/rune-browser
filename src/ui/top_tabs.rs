@@ -46,8 +46,10 @@ fn suggestions(s: &State, p: &Palette) -> Option<El> {
 
 fn strip(s: &State, p: &Palette) -> El {
     let active = s.active_id();
-    // The macOS window buttons take the strip's first 52 points, and 14 of air after them.
-    let mut strip = row().key("strip").h(STRIP_HEIGHT).pl(10.0).gap(6.0).center_y().window_drag().child(el().w(66.0));
+    // The macOS window buttons take the strip's first 52 points, and 14 of air after them;
+    // the Linux ones go at its end.
+    let window = parts::window_buttons(24.0, p);
+    let mut strip = row().key("strip").h(STRIP_HEIGHT).pl(10.0).gap(6.0).center_y().window_drag().children(window.is_none().then(|| el().w(66.0)));
     if s.pinned().next().is_some() {
         let mut pinned = row().key("pinned").gap(4.0).center_y();
         for tab in s.pinned() {
@@ -91,7 +93,7 @@ fn strip(s: &State, p: &Palette) -> El {
         .child(text(s.spaces[s.space].name.clone()).font(LABEL).color(p.text))
         .child(icon(&icons::CHEVRON_DOWN, 10.0).color(p.icon))
         .on_press_tx(|s: &mut State, tx| parts::space_menu(s, "space", tx));
-    strip.child(tabs).child(space)
+    strip.child(tabs).child(space).children(window.map(|window| window.ml(6.0)))
 }
 
 fn selected(tab: El, p: &Palette) -> El {

@@ -1,3 +1,7 @@
 # Chromium (CEF) is downloaded once into .cef/ and shared by debug and release builds.
 [env]
 CEF_PATH = { value = ".cef", relative = true }
+
+# On Linux libcef.so is copied beside the binaries (by the cef crate's build), and found there.
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-args=-Wl,-rpath,$ORIGIN"]

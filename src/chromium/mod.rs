@@ -1,33 +1,34 @@
 //! Chromium, embedded through CEF.
 //!
 //! Each tab is a Chromium browser drawing into a native view of its own. The views sit in one
-//! rounded container laid over the part of the window the Rune view leaves for the page, so
-//! Chromium handles its own input, scrolling, menus and video there, and Rune draws the rest.
+//! container laid over the part of the window the Rune view leaves for the page, so Chromium
+//! handles its own input, scrolling, menus and video there, and Rune draws the rest. What
+//! those views are is [`native`]'s: AppKit views on macOS, X11 windows on Linux.
 //!
 //! Everything here runs on the main thread. Chromium calls back into [`client`] from inside
 //! calls made here, so nothing holds the host borrowed across a call into Chromium, and the
 //! callbacks only [`emit`] events.
 
+#[cfg(target_os = "macos")]
 mod app_protocol;
 mod client;
 pub mod manager;
+#[cfg_attr(target_os = "macos", path = "macos.rs")]
+#[cfg_attr(target_os = "linux", path = "x11.rs")]
+mod native;
 pub mod popup;
 mod pump;
 mod stray;
-mod views;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use cef::*;
-use objc2::MainThreadMarker;
-use objc2::rc::Retained;
-use objc2_app_kit::NSView;
-use rune::raw_window_handle::RawWindowHandle;
+
+pub use native::Post;
 
 pub type TabId = u64;
 
@@ -103,9 +104,9 @@ static LIVE_BROWSERS: AtomicUsize = AtomicUsize::new(0);
 
 struct Host {
     /// Keeps the framework loaded; dropped last, after Chromium shut down.
-    _loader: library_loader::LibraryLoader,
-    parent: Retained<NSView>,
-    container: Retained<NSView>,
+    _loader: native::Loader,
+    parent: native::View,
+    container: native::View,
     browsers: HashMap<TabId, Browser>,
     active: Option<TabId>,
 }
@@ -116,11 +117,11 @@ impl Host {
     fn layout(&self) {
         let (frame, overlay) = (FRAME.get(), OVERLAY.get());
         let shown = !overlay.hidden && self.active.is_some_and(|tab| self.browsers.contains_key(&tab));
-        views::place(&self.container, &self.parent, frame.rect, frame.radius, frame.square_top, overlay.cover_top, shown);
+        native::place(&self.container, &self.parent, frame.rect, frame.radius, frame.square_top, overlay.cover_top, shown);
         let size = (f64::from(frame.rect[2]), f64::from(frame.rect[3]));
         for browser in self.browsers.values() {
-            if let Some(view) = view_of(browser) {
-                views::fill(&view, size);
+            if let Some(view) = native::view_of(browser) {
+                native::fill(&view, size);
             }
         }
     }
@@ -182,17 +183,11 @@ fn browser(tab: TabId) -> Option<Browser> {
     host(|host| host.browsers.get(&tab).cloned()).flatten()
 }
 
-fn view_of(browser: &Browser) -> Option<Retained<NSView>> {
-    let handle = browser.host()?.window_handle();
-    // SAFETY: a windowed browser's handle is its live NSView, used on the main thread.
-    unsafe { Retained::retain(handle.cast::<NSView>()) }
-}
-
 /// Takes a closing browser's view out of the window. Losing its view is what lets Chromium
 /// finish destroying the browser.
 fn remove_view(browser: &Browser) {
-    if let Some(view) = view_of(browser) {
-        view.removeFromSuperview();
+    if let Some(view) = native::view_of(browser) {
+        native::remove(&view);
     }
 }
 
@@ -209,8 +204,12 @@ wrap_app! {
             // A debug build is signed anew on every build, so macOS would ask for the login
             // keychain password each time Chromium reads its cookie key. Debug builds keep
             // that key in the profile instead; release builds use the keychain.
-            #[cfg(debug_assertions)]
+            #[cfg(all(target_os = "macos", debug_assertions))]
             command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
+            // Linux has no one keychain: the cookie key stays in the profile, rather than
+            // waiting on a desktop's password store that may not be there.
+            #[cfg(target_os = "linux")]
+            command_line.append_switch_with_value(Some(&CefString::from("password-store")), Some(&CefString::from("basic")));
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -242,34 +241,17 @@ pub fn is_running() -> bool {
     HOST.with_borrow(Option::is_some)
 }
 
-/// Starts Chromium inside `window` and sends what it reports to `sink`. Call once the window
-/// is on screen. Fails outside the app bundle, where there is no Chromium to load; the app
-/// then runs with an empty page area.
-pub fn start(window: &rune::WindowHandle, sink: impl Fn(Event) + 'static) -> Result<(), String> {
+/// Starts Chromium inside `window` and sends what it reports to `sink`; `post` runs work on
+/// the main thread from any thread. Call once the window is on screen. Fails where there is no
+/// Chromium to load (outside the app bundle, on macOS); the app then runs with an empty page
+/// area.
+pub fn start(window: &rune::WindowHandle, sink: impl Fn(Event) + 'static, post: Post) -> Result<(), String> {
     if is_running() {
         return Ok(());
     }
-    let mtm = MainThreadMarker::new().ok_or("Chromium starts on the main thread")?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let frameworks = exe.parent().map(|dir| dir.join("../Frameworks/Chromium Embedded Framework.framework"));
-    if !frameworks.is_some_and(|path| path.exists()) {
-        return Err("not running from Rune Browser.app (use scripts/run.sh)".into());
-    }
-    let loader = library_loader::LibraryLoader::new(&exe, false);
-    if !loader.load() {
-        return Err("the Chromium Embedded Framework failed to load".into());
-    }
+    let loader = native::load()?;
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-
-    let parent = window
-        .with_raw_handle(|handle| match handle.as_raw() {
-            // SAFETY: the handle's view is the window's live content view.
-            RawWindowHandle::AppKit(handle) => unsafe { Retained::retain(handle.ns_view.as_ptr().cast::<NSView>()) },
-            _ => None,
-        })?
-        .ok_or("the window has no AppKit view")?;
-
-    app_protocol::install();
+    let parent = native::parent(window)?;
     SINK.set(Some(Rc::new(sink)));
 
     let profile = crate::store::folder();
@@ -279,7 +261,7 @@ pub fn start(window: &rune::WindowHandle, sink: impl Fn(Event) + 'static) -> Res
         cache_path: CefString::from(profile.join("Default").to_string_lossy().as_ref()),
         persist_session_cookies: 1,
         log_severity: LogSeverity::WARNING,
-        ..Default::default()
+        ..native::settings()
     };
     let args = args::Args::new();
     let mut app = BrowserApp::new();
@@ -288,21 +270,21 @@ pub fn start(window: &rune::WindowHandle, sink: impl Fn(Event) + 'static) -> Res
         return Err("Chromium failed to initialize".into());
     }
 
-    let container = views::container(&parent, mtm);
+    let container = native::container(&parent);
     HOST.set(Some(Host { _loader: loader, parent, container, browsers: HashMap::new(), active: None }));
-    pump::start();
+    pump::start(post);
     Ok(())
 }
 
 /// Opens a browser for `tab` at `url`, hidden until the tab is [`activate`]d.
 pub fn create_tab(tab: TabId, url: &str) {
-    let Some((container, bounds)) = host(|host| (host.container.clone(), host.container.bounds())) else { return };
+    let Some(container) = host(|host| host.container.clone()) else { return };
     if browser(tab).is_some() {
         return;
     }
-    let bounds = Rect { x: 0, y: 0, width: (bounds.size.width as i32).max(1), height: (bounds.size.height as i32).max(1) };
-    let info = WindowInfo { runtime_style: RuntimeStyle::ALLOY, ..Default::default() }
-        .set_as_child(Retained::as_ptr(&container).cast_mut().cast::<c_void>(), &bounds);
+    let (width, height) = native::size(&container);
+    let bounds = Rect { x: 0, y: 0, width: (width as i32).max(1), height: (height as i32).max(1) };
+    let info = WindowInfo { runtime_style: RuntimeStyle::ALLOY, ..Default::default() }.set_as_child(native::handle(&container), &bounds);
     let mut client = client::TabClient::new(tab);
     let created = browser_host_create_browser_sync(
         Some(&info),
@@ -314,8 +296,8 @@ pub fn create_tab(tab: TabId, url: &str) {
     );
     let Some(created) = created else { return };
     let active = host(|host| host.active == Some(tab)).unwrap_or(false);
-    if let Some(view) = view_of(&created) {
-        view.setHidden(!active);
+    if let Some(view) = native::view_of(&created) {
+        native::set_hidden(&view, !active);
     }
     if !active && let Some(browser_host) = created.host() {
         browser_host.was_hidden(1);
@@ -337,8 +319,8 @@ pub fn activate(tab: TabId) {
     };
     for (id, browser) in browsers {
         let shown = id == tab;
-        if let Some(view) = view_of(&browser) {
-            view.setHidden(!shown);
+        if let Some(view) = native::view_of(&browser) {
+            native::set_hidden(&view, !shown);
         }
         if let Some(browser_host) = browser.host() {
             browser_host.was_hidden(i32::from(!shown));
@@ -495,8 +477,8 @@ pub fn has_page(tab: TabId) -> bool {
 /// Gives the keyboard to `tab`'s page.
 pub fn focus_page(tab: TabId) {
     let Some(browser) = browser(tab) else { return };
-    if let Some(view) = view_of(&browser) {
-        views::focus(&view);
+    if let Some(view) = native::view_of(&browser) {
+        native::focus(&view);
     }
     if let Some(browser_host) = browser.host() {
         browser_host.set_focus(1);
@@ -511,7 +493,7 @@ pub fn focus_app() {
     if let Some(browser_host) = active.and_then(|browser| browser.host()) {
         browser_host.set_focus(0);
     }
-    views::focus(&parent);
+    native::focus(&parent);
 }
 
 /// Closes every browser and shuts Chromium down, so cookies and the profile reach the disk.
@@ -528,12 +510,12 @@ pub fn shutdown() {
     let deadline = Instant::now() + Duration::from_secs(2);
     while LIVE_BROWSERS.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
         // Each turn gets its own pool, so views released in it are freed in it.
-        objc2::rc::autoreleasepool(|_| do_message_loop_work());
+        native::drain(do_message_loop_work);
         std::thread::sleep(Duration::from_millis(5));
     }
     pump::stop();
     SINK.set(None);
-    host.container.removeFromSuperview();
+    native::remove(&host.container);
     if LIVE_BROWSERS.load(Ordering::SeqCst) == 0 {
         cef::shutdown();
         drop(host);
@@ -562,7 +544,7 @@ fn running() -> bool {
     HOST.with_borrow(Option::is_some)
 }
 
-/// Tells pages which colour scheme to prefer: dark, light, or (`None`) as macOS is.
+/// Tells pages which colour scheme to prefer: dark, light, or (`None`) as the system is.
 pub fn set_color_scheme(dark: Option<bool>) {
     if !running() {
         return;
@@ -624,9 +606,5 @@ pub fn clear_cache() -> bool {
 
 /// Puts right the dialogs Chromium opened on its own. Each turn of the loop.
 fn tend_dialogs() {
-    host(|host| {
-        if let Some(window) = host.parent.window() {
-            views::tend_dialogs(&window, FRAME.get().rect, manager::expects_dialog());
-        }
-    });
+    host(|host| native::tend_dialogs(&host.parent, FRAME.get().rect, manager::expects_dialog()));
 }

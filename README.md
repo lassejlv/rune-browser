@@ -1,6 +1,6 @@
 # Rune Browser
 
-A web browser for macOS. Its interface is drawn with [Rune](https://github.com/anomalyco/rune);
+A web browser for macOS and Linux. Its interface is drawn with [Rune](https://github.com/anomalyco/rune);
 its pages are drawn by Chromium, embedded through [CEF](https://github.com/chromiumembedded/cef)
 and the [`cef`](https://crates.io/crates/cef) crate. The design is in the Paper file "Rune Browser".
 
@@ -11,10 +11,17 @@ scripts/run.sh            # debug build
 scripts/run.sh --release
 ```
 
-The first run downloads Chromium (about 350 MB) into `.cef/`. Chromium only runs from an app
-bundle, so the script builds the two binaries, assembles `target/<profile>/Rune Browser.app`
-(the framework plus five helper apps) and starts it. `cargo run` alone opens the interface
-without pages.
+The first run downloads Chromium (about 350 MB) into `.cef/`. On macOS Chromium only runs from an
+app bundle, so the script builds the two binaries, assembles `target/<profile>/Rune Browser.app`
+(the framework plus five helper apps) and starts it; `cargo run` alone opens the interface
+without pages. On Linux the script puts `libcef.so` and Chromium's data files beside the two
+binaries in `target/<profile>/` and starts the browser from there.
+
+On Linux pages are X11 windows inside the Rune window, so the app runs on X11, or through
+XWayland in a Wayland session. Building needs `cmake`, `ninja` and `libxkbcommon-dev`; running
+needs the libraries Chromium does (NSS, GTK 3, `libxkbcommon-x11`) and a Vulkan or GL driver
+for Rune (Mesa's software ones will do). Chromium runs without its sandbox there, which needs a
+setuid helper installed as root.
 
 ```sh
 cargo test
@@ -43,6 +50,8 @@ Light and dark follow the system.
 | ⌘P | Print |
 | ⌥⌘I | Developer tools |
 
+On Linux the same shortcuts take Ctrl in place of ⌘, and Alt+← and Alt+→ go back and forward.
+
 Typing in the address field lists matching pages from history; ↑ and ↓ pick one, Return opens
 it. Drag a tab to reorder it. A secondary click on a tab pins, duplicates or closes it, or
 copies its link. Pinned tabs show as icon tiles in every space. Spaces are separate tab lists:
@@ -55,7 +64,8 @@ asks for the camera, microphone, location or notifications shows a bar under the
 with Allow and Block.
 
 Tabs, spaces and the layout are saved to
-`~/Library/Application Support/Rune Browser/session.json` and restored at launch, and history
+`~/Library/Application Support/Rune Browser/session.json` (`~/.local/share/Rune Browser/` on
+Linux) and restored at launch, and history
 to `history.json` beside it. The Chromium profile is in the same folder, so cookies, local
 storage, IndexedDB, service workers and the cache all outlive a restart. A restored tab loads
 its page when first shown.
