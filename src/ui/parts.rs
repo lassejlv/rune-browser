@@ -3,7 +3,7 @@
 use rune::tok::TextStyle;
 use rune::{Cursor, El, Icon, Key, PointerPress, PopupItem, PopupMenu, ScrollSpec, Span, Tx, col, el, icon, rich, row, text, text_input};
 
-use super::theme::{Palette, rgb, rgba};
+use super::theme::Palette;
 use super::icons;
 use crate::address;
 use crate::chromium::{self, Command, Frame};
@@ -42,35 +42,38 @@ fn turned_icon_button(key: &'static str, label: &'static str, glyph: &'static Ic
     if enabled { button.hover(p.hover).on_press_tx(move |s: &mut State, tx| s.run(command, tx)) } else { button }
 }
 
-/// The window's close, minimize and maximize buttons where the app draws its own titlebar:
-/// on Linux, whose window has no frame. They sit and look where macOS puts its traffic
-/// lights, so both layouts read the same on every system. None on macOS, which draws its own.
-pub fn window_buttons() -> Option<El> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-    let light = |key: &'static str, label: &'static str, fill: u32, glyph: &'static Icon, act: fn(&mut Tx)| {
+/// None on macOS, which draws its own traffic lights.
+#[cfg(not(target_os = "linux"))]
+pub fn window_buttons(_side: f32, _p: &Palette) -> Option<El> {
+    None
+}
+
+/// The window's minimize, maximize and close buttons where the app draws its own titlebar:
+/// on Linux, whose window has no frame. They look and sit as a GNOME header bar's do: round,
+/// `side` points across, a faint fill behind a symbolic glyph, at the titlebar's trailing end.
+#[cfg(target_os = "linux")]
+pub fn window_buttons(side: f32, p: &Palette) -> Option<El> {
+    let button = |key: &'static str, label: &'static str, glyph: &'static Icon, act: fn(&mut Tx)| {
         el()
             .key(key)
             .role("button")
             .label(label)
-            .size(12.0, 12.0)
-            .radius(6.0)
-            .fill(rgb(fill))
-            .border(0.5, rgba(0x000000, 0.12))
+            .size(side, side)
+            .radius(side / 2.0)
+            .fill(p.text.alpha(if p.dark { 0.10 } else { 0.08 }))
+            .hover(p.hover)
             .center()
-            .child(icon(glyph, 8.0).color(rgba(0x000000, 0.55)).group_opacity(0.0, 1.0))
+            .child(icon(glyph, 10.0).color(p.text))
             .on_press_tx(move |_: &mut State, tx| act(tx))
     };
     Some(
         row()
             .key("window-buttons")
-            .gap(8.0)
+            .gap(6.0)
             .center_y()
-            .hover_group()
-            .child(light("window-close", "Close", 0xFF5F57, &icons::CLOSE, Tx::close_window))
-            .child(light("window-minimize", "Minimize", 0xFEBC2E, &icons::MINIMIZE, Tx::minimize))
-            .child(light("window-maximize", "Maximize", 0x28C840, &icons::MAXIMIZE, Tx::toggle_maximized)),
+            .child(button("window-minimize", "Minimize", &icons::MINIMIZE, |_| crate::frame::minimize()))
+            .child(button("window-maximize", "Maximize", &icons::MAXIMIZE, Tx::toggle_maximized))
+            .child(button("window-close", "Close", &icons::CLOSE, Tx::close_window)),
     )
 }
 

@@ -71,16 +71,17 @@ pub static PUZZLE: Icon = Icon {
     body: r#"<path d="M6.5 2.5a1.25 1.25 0 0 1 2.5 0v1h2.75a.75.75 0 0 1 .75.75V7h1a1.25 1.25 0 0 1 0 2.5h-1v2.75a.75.75 0 0 1-.75.75H9v-1a1.25 1.25 0 0 0-2.5 0v1H3.75a.75.75 0 0 1-.75-.75V9.5h1a1.25 1.25 0 0 0 0-2.5H3V4.25a.75.75 0 0 1 .75-.75H6.5Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-/// The window buttons' glyphs, shown while the pointer is over them (Linux, where the app
-/// draws them).
+/// The window buttons' glyphs, as GNOME's symbolic ones (Linux, where the app draws them).
+#[cfg(target_os = "linux")]
 pub static MINIMIZE: Icon = Icon {
     name: "minimize",
     view: 12.0,
-    body: r#"<path d="M2.5 6h7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>"#,
+    body: r#"<path d="M3 8.5h6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>"#,
 };
 
+#[cfg(target_os = "linux")]
 pub static MAXIMIZE: Icon = Icon {
     name: "maximize",
     view: 12.0,
-    body: r#"<path d="M3 4.25V9h4.75ZM9 7.75V3H4.25Z" fill="currentColor"/>"#,
+    body: r#"<rect x="2.75" y="2.75" width="6.5" height="6.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>"#,
 };

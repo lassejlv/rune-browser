@@ -54,8 +54,9 @@ fn controls(s: &State, p: &Palette) -> El {
         .child(forward)
         .child(reload);
     let controls = row().key("controls").h(28.0).center_y();
-    match parts::window_buttons() {
-        Some(window) => controls.pl(4.0).child(window).child(el().grow(1.0)).child(buttons),
+    // macOS puts its traffic lights before them; the Linux buttons go at the row's end.
+    match parts::window_buttons(22.0, p) {
+        Some(window) => controls.child(buttons).child(el().grow(1.0)).child(window),
         None => controls.justify_end().child(buttons),
     }
 }

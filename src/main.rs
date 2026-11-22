@@ -4,7 +4,7 @@
 mod address;
 mod chromium;
 #[cfg(target_os = "linux")]
-mod edges;
+mod frame;
 mod extensions;
 mod history;
 mod session;
@@ -166,7 +166,7 @@ fn main() {
     let handle = app.handle();
     app.on_ready(move |window| {
         #[cfg(target_os = "linux")]
-        edges::start(window);
+        frame::start(window);
         // The first frame is on screen: only now load Chromium, which takes about a second.
         let events = handle.clone();
         let main = handle.clone();

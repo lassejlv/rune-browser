@@ -1,10 +1,13 @@
-//! Linux: the window has no frame (the app draws its own titlebar), so nothing at its edges
-//! would resize it. Input-only X11 windows along its edges and in its corners take a press
-//! there and hand it to the window manager as a resize (`_NET_WM_MOVERESIZE`), with the
-//! cursors a frame shows. They step aside while the window is maximized or full screen.
+//! Linux: what a window manager's frame would do for a window that has none (the app draws its
+//! own titlebar). Input-only X11 windows along its edges and in its corners take a press there
+//! and hand it to the window manager as a resize (`_NET_WM_MOVERESIZE`), with the cursors a
+//! frame shows; they step aside while the window is maximized or full screen. [`minimize`]
+//! asks the window manager to iconify it, which Rune does only for a framed window.
 //!
-//! They run on a thread of their own with their own X connection: the presses on them are
+//! The edges run on a thread of their own with their own X connection: the presses on them are
 //! that connection's, so it can let go of the pointer for the window manager to take it.
+
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
@@ -20,11 +23,14 @@ use rune::raw_window_handle::RawWindowHandle;
 /// How far into the window an edge takes presses, and how far along each side a corner does,
 /// in pixels.
 const EDGE: i32 = 6;
-const CORNER: i32 = 16;
+const CORNER: i32 = 12;
 
 /// The edges and corners: `_NET_WM_MOVERESIZE`'s direction for each, and its glyph in the X
 /// cursor font, clockwise from the top-left corner.
 const SIDES: [(u32, u16); 8] = [(0, 134), (1, 138), (2, 136), (3, 96), (4, 14), (5, 16), (6, 12), (7, 70)];
+
+/// The app's window, once [`start`] has it.
+static WINDOW: AtomicU32 = AtomicU32::new(0);
 
 /// Starts the edges around `window`.
 pub fn start(window: &rune::WindowHandle) {
@@ -34,11 +40,32 @@ pub fn start(window: &rune::WindowHandle) {
         _ => None,
     });
     let Ok(Some(parent)) = parent else { return };
+    WINDOW.store(parent, Ordering::Relaxed);
     let _ = std::thread::Builder::new().name("window-edges".into()).spawn(move || {
         if let Err(error) = run(parent) {
             eprintln!("rune-browser: the window's edges won't resize it: {error}");
         }
     });
+}
+
+/// Minimizes the app's window, as ICCCM asks: a `WM_CHANGE_STATE` message for the iconic state.
+pub fn minimize() {
+    let window = WINDOW.load(Ordering::Relaxed);
+    if window == 0 {
+        return;
+    }
+    let ask = || -> Result<(), Box<dyn std::error::Error>> {
+        let (x, screen) = XCBConnection::connect(None)?;
+        let root = x.setup().roots[screen].root;
+        const ICONIC: u32 = 3;
+        let message = ClientMessageEvent::new(32, window, atom(&x, b"WM_CHANGE_STATE")?, [ICONIC, 0, 0, 0, 0]);
+        x.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, message)?;
+        x.flush()?;
+        Ok(())
+    };
+    if let Err(error) = ask() {
+        eprintln!("rune-browser: the window couldn't be minimized: {error}");
+    }
 }
 
 fn atom(x: &XCBConnection, name: &[u8]) -> Result<Atom, Box<dyn std::error::Error>> {
